@@ -1,0 +1,215 @@
+{% extends "nest/base.html" %}
+{% load i18n static %}
+{% load mathfilters %}
+{% load nest_extras %}
+
+{% block extrastyle %}
+<style>
+    #video_container { display:none; flex-direction: column; padding:0px; background-color: {{ background_color }}; width: 100vw; height: 100vh; align-items: center; position: fixed; justify-content: space-between; top: 0; left: 0; z-index: 0; }
+    #video_container.active { display:flex; z-index: 1000; }
+    video {display:block; padding: 0;}
+    .videos_and_titles_wrapper {display: flex; flex-direction: row; justify-content: center; align-items: center; gap: {{ videos_gap }}; flex-grow: 1;}
+    .video_wrapper {display: flex;flex-direction: column;align-items: center;}
+    .video_title {color: {{ text_color }}; padding: 5px 15px; font-size: 2.5em; font-weight: bold; white-space: nowrap; border-radius: 5px; margin-top: 10px; box-sizing: border-box;}
+    .bottom_message {color: {{ text_color }}; font-size: 2em; padding: 20px; text-align: center; width: 100%; box-sizing: border-box; flex-shrink: 0;}
+    #qa { margin: 30px 0; display:none; }
+</style>
+{% endblock %}
+
+{% block extrahead %}
+<script>
+    var clicks = 0;
+
+    let video_a_play_count = 0;
+    let video_b_play_count = 0;
+    const MAX_PLAYS = {{ max_plays }}; // Desired number of plays
+
+    function onClick() {
+        clicks += 1;
+        document.getElementById("clicks").innerHTML = clicks;
+    }
+
+    // Event listener for when video_a ends
+    const handleVideoAEnded = () => {
+        video_a_play_count++;
+        if (video_a_play_count < MAX_PLAYS) {
+            video_a.currentTime = 0; // Rewind to the beginning
+            video_a.play();         // Play again
+        } else {
+            video_a.pause();        // Pause after MAX_PLAYS
+            video_a.currentTime = 0; // Optionally reset to beginning when paused
+            // Check if both videos have finished their cycles to do something else
+            checkAllVideosFinished();
+        }
+    };
+
+    // Event listener for when video2 ends
+    const handleVideoBEnded = () => {
+        video_b_play_count++;
+        if (video_b_play_count < MAX_PLAYS) {
+            video_b.currentTime = 0; // Rewind to the beginning
+            video_b.play();         // Play again
+        } else {
+            video_b.pause();        // Pause after MAX_PLAYS
+            video_b.currentTime = 0; // Optionally reset to beginning when paused
+            // Check if both videos have finished their cycles to do something else
+            checkAllVideosFinished();
+        }
+    };
+
+    // Function to check if both videos have completed their cycles
+    const checkAllVideosFinished = () => {
+        if (video_a_play_count >= MAX_PLAYS && video_b_play_count >= MAX_PLAYS) {
+
+            video_container.classList.remove('active');
+            document.body.style.backgroundColor = "white";
+            container.style.display = "block";
+            qa.style.display = "block";
+
+            video_a.removeEventListener('ended', handleVideoAEnded);
+            video_b.removeEventListener('ended', handleVideoBEnded);
+
+            button.style.display = "none"; // Remove the button after videos are played
+        }
+    };
+
+    function play_video(url1, url2) {
+        container.style.display = "none";
+
+        // Activate the container for side-by-side videos
+        video_container.classList.add('active');
+
+        // Add url to the video elements
+        video_a.style.objectFit = 'none';
+        video_a.src = url1;
+
+        video_b.style.objectFit = 'none';
+        video_b.src = url2;
+
+        // Add video handlers
+        video_a.addEventListener('ended', handleVideoAEnded);
+        video_b.addEventListener('ended', handleVideoBEnded);
+
+        // Ensure videos start from the beginning each time the button is clicked
+        video_a.currentTime = 0;
+        video_b.currentTime = 0;
+
+        // // Play both videos
+        video_a.play();
+        video_b.play();
+
+    }
+    
+    window.addEventListener('load', function () {
+        container = document.getElementById("container");
+        video_container = document.getElementById("video_container");
+        qa = document.getElementById("qa");
+        video_a = document.getElementById("video_a");
+        video_b = document.getElementById("video_b");
+        button = document.getElementById("button");
+
+        button.addEventListener("click", function() {
+            play_video('{{ video_a }}', '{{ video_b }}');
+        });
+    })
+    document.addEventListener("keydown", (e) => {
+        if ((e.key === " " || e.key === "Escape") && (video_container.classList == "active")) {
+            video_a.pause()
+            video_b.pause()
+            video_container.classList.remove('active');
+
+            document.body.style.backgroundColor = "white";
+            container.style.display = "block";
+            if (clicks > 0) {
+                qa.style.display = "block";
+            }
+
+            video_a.removeEventListener('ended', handleVideoAEnded);
+            video_b.removeEventListener('ended', handleVideoBEnded);
+
+            // Potentially we also want to remove the button as soon as they exit the videos. 
+            if (video_a_play_count >= MAX_PLAYS && video_b_play_count >= MAX_PLAYS) {
+                button.style.display = "none"; // Hide the button after videos are played
+            }
+        }
+    });
+    document.addEventListener("dblclick", (e) => {
+        if (video_container.classList == "active") {
+            video_a.pause()
+            video_b.pause()
+            video_container.classList.remove('active');
+            document.body.style.backgroundColor = "white";
+            container.style.display = "block";
+            if (clicks > 0) {
+                qa.style.display = "block";
+            }
+
+            video_a.removeEventListener('ended', handleVideoAEnded);
+            video_b.removeEventListener('ended', handleVideoBEnded);
+
+            // Potentially we also want to remove the button as soon as they exit the videos. 
+            if (video_a_play_count >= MAX_PLAYS && video_b_play_count >= MAX_PLAYS) {
+                button.style.display = "none"; // Hide the button after videos are played
+            }
+        }
+    });
+</script>
+<link rel="stylesheet" href="{% static "nest/css/forms.css" %}">
+{% endblock %}
+
+{% block coltype %}colMS{% endblock %}
+
+{% block bodyclass %}{{ block.super }} dashboard{% endblock %}
+
+{% block breadcrumbs %}{% endblock %}
+
+{% block content_title %} {% if title %}<h1>{{ title }}</h1>{% endif %} {% endblock %}
+
+{% block content %}
+<div id="content-main">
+    {% if instruction_html %} {{ instruction_html|safe }} {% endif %}
+    <div>
+        <!-- <a class="button" id="button" onclick="onClick()">{{ button }}</a> -->
+        <a class="button" id="button" onclick="onClick()"> Play Videos </a>
+    </div>
+    <div id=qa>
+        <p id="question">
+            {{ question }}
+        </p>
+        <p>
+        <form id="ccr" {% if session_id %} action="{% url 'nest:step_session' session_id %}" {% endif %} method="post">
+            {% csrf_token %}
+            <div>
+                {% for choice, value in choices|zip:video_a_to_b_values %}
+                <div>
+                    <input type="radio" name="ccr_{{stimulusvotegroup_id}}" id="radio_ccr{{ forloop.counter0 }}" value="{{ value }}" required>
+                    <label for="radio_ccr{{ forloop.counter0 }}"> {{ choice }} </label>
+                </div>
+                {% endfor %}
+            </div>
+            <div>
+                <button type="submit" class="button" id="submit">Submit</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extrabody %}
+<div id="video_container">
+    <div class="videos_and_titles_wrapper">
+        <div class="video_wrapper">
+            <p  class="video_title">Left Video</p>
+            <video id="video_a" {% if video_show_controls %} controls {% endif %} controlsList="nodownload nofullscreen noremoteplayback"></video>
+        </div>
+        <div class="video_wrapper">
+            <p  class="video_title">Right Video</p>
+            <video id="video_b" {% if video_show_controls %} controls {% endif %} controlsList="nodownload nofullscreen noremoteplayback"></video>
+        </div>
+    </div>
+    <div class="bottom_message">
+        {% if instruction_html %} {{ instruction_html|safe }} {% endif %}
+    </div>
+</div>
+{% endblock %}
+

@@ -263,7 +263,8 @@ class DcrPage(Page, PageWithVideoMixin, ABC):
 class CcrPage(Page, PageWithVideoMixin, ABC):
     """Comparison Category Rating (CCR) page"""
     TEMPLATES = {'interactive': 'nest/ccr.html',
-                 'standard': 'nest/ccr_standard.html'
+                 'standard': 'nest/ccr_standard.html',
+                 'side_by_side': 'nest/ccr_side_by_side.html'
                  }
     DEFAULT_TEMPLATE = 'interactive'
 
@@ -295,6 +296,15 @@ class CcrPage(Page, PageWithVideoMixin, ABC):
         elif self.context['template_version'] == 'standard':
             required_fields = ['title', 'instruction_html',
                                'num_plays', 't_gray',
+                               'button_a', 'button_b',
+                               'video_a', 'video_b',
+                               'video_a_to_b_values',
+                               'question', 'choices',
+                               'stimulusvotegroup_id']
+        elif self.context['template_version'] == 'side_by_side':
+            required_fields = ['title', 'instruction_html',
+                               'background_color', 'text_color',
+                               'max_plays', 'videos_gap',
                                'button_a', 'button_b',
                                'video_a', 'video_b',
                                'video_a_to_b_values',
