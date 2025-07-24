@@ -3,10 +3,11 @@ from enum import Enum
 from typing import List, Optional
 
 import pandas
+import numpy as np
 from django.db import transaction
 from nest.config import ExperimentConfig
 from nest.helpers import memoized, my_argmin
-from nest.models import Content, Experiment, Round, Session, Stimulus, \
+from nest.models import Content, Experiment, QuestPlus, Round, Session, Stimulus, \
     StimulusGroup, StimulusVoteGroup, Subject, Vote
 
 
@@ -102,6 +103,7 @@ class ExperimentController(object):
                     experiment=self.experiment,
                     stimulus_id=sd['stimulus_id'],
                     content=c,
+                    distortion_level=sd.get('distortion_level'),
                 )  # TODO: add condition in future
 
         svgd: dict
@@ -156,36 +158,87 @@ class ExperimentController(object):
                     svg.stimulusgroup = sg
                     svg.save()
 
+        # Create QuestPlus instances if playlist_logic is "questplus"
+        if self.experiment_config.playlist_logic == 'questplus':
+            self._create_questplus_instances()
+
+    def _create_questplus_instances(self):
+        """
+        Create QuestPlus instances for each content when playlist_logic is 'questplus'.
+        """        
+        for cd in self.experiment_config.stimulus_config.contents:
+            content_id = cd['content_id']
+            
+            try:
+                content = Content.objects.get(
+                    experiment=self.experiment,
+                    content_id=content_id
+                )
+                
+                # Check if QuestPlus already exists for this content
+                if not hasattr(content, 'questplus') or content.questplus is None:
+                    # Get QuestPlus configuration for this content
+                    quest_config = self._get_questplus_config_for_content(content_id)
+                    
+                    if quest_config:
+                        # Create QuestPlus instance
+                        questplus = content.create_questplus(
+                            quest_config=quest_config, 
+                            experiment=self.experiment
+                        )
+                    else:
+                        print(f"Warning: No QuestPlus config found for content {content_id}")
+                else:
+                    print(f"QuestPlus already exists for content {content_id}")
+                    
+            except Content.DoesNotExist:
+                print(f"Error: Content with id {content_id} not found")
+
+    def _get_questplus_config_for_content(self, content_id: int) -> dict:
+        """
+        Get QuestPlus configuration for a specific content ID.
+        
+        Args:
+            content_id: The content ID to get configuration for
+            
+        Returns:
+            dict: QuestPlus configuration or default config if not specified
+        """
+        questplus_configs = self.experiment_config.questplus_config
+
+        if questplus_configs is not None and not isinstance(questplus_configs, dict):
+            # We can either provide a specific config for a content ID, or a general config for all contents
+            if str(content_id) in questplus_configs:
+                return questplus_configs[str(content_id)]
+            elif content_id in questplus_configs:
+                return questplus_configs[content_id]
+            else:
+                return questplus_configs
+        else:
+            # Return default config if no specific config is found
+            return {
+                'stim_domain': dict(intensity=np.linspace(1, 51, 51).tolist()),  # QP levels in linear scale
+                'outcome_domain': dict(response=['correct', 'incorrect']),  # Binary outcomes for 2AFC
+                'param_domain': {
+                    'threshold': np.linspace(1, 51, 51).tolist(),  # QP levels in linear scale
+                    'slope': np.linspace(1, 10, 19).tolist(),  # Slope range 1-10
+                    'lapse_rate': np.linspace(0, 0.04, 5).tolist(),  # Lapse rate from 0 to 0.1
+                    'lower_asymptote': 0.5,  # Lower asymptote from 0 to 0.1
+                },
+                'func': 'weibull',  # Psychometric function
+                'stim_scale': 'linear',
+                'param_estimation': 'mean',
+                'stim_selection': 'min_entropy'
+            }
+
     @transaction.atomic
     def add_session(self, subject: Subject):
         """
         add a new Session to Experiment, and assign to subject. A new Session
-        is created, so are the corresponding Rounds.
+        is created. Rounds will be created just-in-time as needed.
         """
-        ordering_so_far = self._get_ordering_so_far()
-        stimulusgroup_ids: List[int] = self.experiment_config.stimulus_config.stimulusgroup_ids
-        super_sg_ids = self.experiment_config.stimulus_config.super_stimulusgroup_ids
-
-        d_rid_to_sgid = self._order(
-            rounds_per_session=self.experiment_config.rounds_per_session,
-            stimulusgroup_ids=stimulusgroup_ids,
-            subject_id=subject.id,
-            ordering_so_far=ordering_so_far,
-            prioritized=self.experiment_config.prioritized,
-            random_seed=self.randgen.randint(0, 2**16),
-            blocklist_stimulusgroup_ids=self.experiment_config.blocklist_stimulusgroup_ids,
-            super_stimulusgroup_ids=super_sg_ids,
-        )
-
         sess = Session(experiment=self.experiment, subject=subject)
         sess.save()
-        for rid, sgid in d_rid_to_sgid.items():
-            sg: StimulusGroup = StimulusGroup.objects.get(
-                stimulusgroup_id=sgid, experiment=sess.experiment)
-            r = Round(session=sess,
-                      round_id=rid,
-                      stimulusgroup=sg)
-            r.save()
         return sess
 
     @transaction.atomic
@@ -221,11 +274,14 @@ class ExperimentController(object):
         for r in s.round_set.all():
             sg = r.stimulusgroup
             sg_dict[r.round_id] = sg.stimulusgroup_id
-        for rid in range(self.experiment_config.rounds_per_session):
-            assert rid in sg_dict, \
-                'round ids must be 0, ..., {}, but are: {}'.format(
-                    self.experiment_config.rounds_per_session - 1,
-                    sg_dict.keys())
+        # With lazy initialization, not all rounds may exist yet
+        # Only validate that existing round IDs are within expected range
+        if sg_dict:
+            max_rid = max(sg_dict.keys())
+            assert max_rid < self.experiment_config.rounds_per_session, \
+                'round ids must be < {}, but found: {}'.format(
+                    self.experiment_config.rounds_per_session,
+                    max_rid)
         od = {
             'subject': subject_id,
             'stimulusgroups': sg_dict,
@@ -356,20 +412,180 @@ class ExperimentController(object):
 
         return d_rid_to_sgid
 
-    def get_session_status(self, session: Session) -> SessionStatus:
-        rounds_per_session = self.experiment_config.rounds_per_session
-        rounds_existed = [False for _ in range(rounds_per_session)]
-        r: Round
-        rounds: List[Round] = list(session.round_set.all())
-        for r in rounds:
-            assert 0 <= r.round_id < rounds_per_session
-            rounds_existed[r.round_id] = True
-        if all(rounds_existed):
-            pass
-        elif all([not e for e in rounds_existed]):
-            return SessionStatus.UNINITIALIZED
+    def get_next_stimulusgroup_id(self, session: Session, round_id: int) -> int:
+        """
+        Determine the next stimulus group ID for the given round using either
+        QuestPlus adaptive selection or standard ordering logic.
+        """
+        from .models import Session
+        
+        # Check if we should use QuestPlus methodology
+        if self.experiment_config.playlist_logic == 'questplus':
+            return self._get_next_stimulusgroup_id_questplus(session, round_id)
         else:
-            return SessionStatus.PARTIALLY_INITIALIZED
+            return self._get_next_stimulusgroup_id_standard(session, round_id)
+    
+    def _get_next_stimulusgroup_id_questplus(self, session: Session, round_id: int) -> int:
+        """
+        QuestPlus methodology: Select content that has not been viewed or is least viewed by this user,
+        then use QuestPlus to estimate the next threshold for that content.
+        """
+        from .models import Content, StimulusGroup, Vote, Round
+        from collections import defaultdict
+        
+        # Get content view counts for this specific user
+        content_view_counts = defaultdict(int)
+        user_sessions = Session.objects.filter(subject=session.subject)
+        
+        for user_session in user_sessions:
+            user_rounds = Round.objects.filter(session=user_session)
+            for user_round in user_rounds:
+                votes = Vote.objects.filter(round=user_round)
+                for vote in votes:
+                    for stimulus in vote.stimulusvotegroup.stimuli:
+                        if stimulus.content:
+                            content_view_counts[stimulus.content.id] += 1
+        
+        # Get all available content for this experiment
+        available_content = Content.objects.filter(experiment=session.experiment)
+        
+        # Find content with minimum view count (prioritize unviewed, then least viewed)
+        min_view_count = min(content_view_counts.values())
+        candidate_contents = []
+        
+        for content in available_content:
+            view_count = content_view_counts.get(content.id, 0)
+            if view_count == min_view_count:
+                candidate_contents.append(content)
+        
+        # Select content (if multiple candidates, use the first one for consistency)
+        selected_content = random.choice(candidate_contents) if len(candidate_contents) > 0 else None
+
+        if not selected_content:
+            # Fallback to standard methodology if no content found
+            return self._get_next_stimulusgroup_id_standard(session, round_id)
+        
+        # Get QuestPlus instance for selected content and estimate next threshold
+        questplus_instance = selected_content.get_questplus()
+        if questplus_instance:
+            # Use QuestPlus to determine the optimal stimulus level for this content
+            next_threshold = questplus_instance.get_next_stimulus()
+            
+            # Find stimulus group that corresponds to this content and threshold level
+            # Use distortion_level for precise threshold matching
+            stimulus_groups = StimulusGroup.objects.filter(
+                experiment=session.experiment,
+                stimulus__content=selected_content,
+                stimulus__distortion_level=next_threshold
+            ).distinct()
+            
+            if stimulus_groups.exists():
+                return stimulus_groups.first().stimulusgroup_id
+            
+            # If no exact match, find closest distortion level
+            closest_stimulus_groups = StimulusGroup.objects.filter(
+                experiment=session.experiment,
+                stimulus__content=selected_content,
+                stimulus__distortion_level__isnull=False
+            ).distinct()
+            
+            if closest_stimulus_groups.exists():
+                # Find the stimulus group with distortion level closest to next_threshold
+                closest_sg = None
+                min_distance = float('inf')
+                
+                for sg in closest_stimulus_groups:
+                    for stimulus in sg.stimuli:
+                        if (stimulus.content == selected_content and 
+                            stimulus.distortion_level is not None):
+                            distance = abs(stimulus.distortion_level - next_threshold)
+                            if distance < min_distance:
+                                min_distance = distance
+                                closest_sg = sg
+                
+                if closest_sg:
+                    return closest_sg.stimulusgroup_id
+        
+        # Fallback: find any stimulus group containing the selected content
+        fallback_sg = StimulusGroup.objects.filter(
+            experiment=session.experiment,
+            stimulus__content=selected_content
+        ).first()
+        
+        if fallback_sg:
+            return fallback_sg.stimulusgroup_id
+        
+        # Final fallback to standard methodology
+        return self._get_next_stimulusgroup_id_standard(session, round_id)
+    
+    def _get_next_stimulusgroup_id_standard(self, session: Session, round_id: int) -> int:
+        """
+        Standard methodology: Use existing ordering logic.
+        """
+        from .models import Session
+        
+        # Get ordering history for all other completed sessions
+        ordering_so_far = []
+        for sess in Session.objects.filter(experiment=session.experiment):
+            if sess.id == session.id:
+                continue
+            od = self._get_ordering_for_session(sess.id)
+            if od['stimulusgroups']:  # Only add if session has completed rounds
+                ordering_so_far.append(od)
+        
+        # Add current session's completed rounds to history
+        current_sg_dict = dict()
+        for r in session.round_set.all():
+            if r.round_id < round_id:  # Only include completed rounds
+                current_sg_dict[r.round_id] = r.stimulusgroup.stimulusgroup_id
+        
+        if current_sg_dict:
+            current_ordering = {
+                'subject': session.subject.id,
+                'stimulusgroups': current_sg_dict,
+            }
+            ordering_so_far.append(current_ordering)
+        
+        # Generate ordering for just this one round
+        # Use a consistent seed based on session ID and round ID for reproducibility
+        session_round_seed = hash((session.id, round_id)) % (2**16)
+        d_rid_to_sgid = self._order(
+            rounds_per_session=round_id + 1,  # Only generate up to current round
+            stimulusgroup_ids=self.experiment_config.stimulus_config.stimulusgroup_ids,
+            subject_id=session.subject.id,
+            ordering_so_far=ordering_so_far,
+            prioritized=self.experiment_config.prioritized,
+            random_seed=session_round_seed,
+            blocklist_stimulusgroup_ids=self.experiment_config.blocklist_stimulusgroup_ids,
+            super_stimulusgroup_ids=self.experiment_config.stimulus_config.super_stimulusgroup_ids,
+        )
+        
+        return d_rid_to_sgid[round_id]
+
+    def get_or_create_round(self, session: Session, round_id: int):
+        """
+        Get existing round or create a new one with just-in-time stimulus selection.
+        """
+        from .models import Round, StimulusGroup
+        
+        try:
+            # Try to get existing round
+            return Round.objects.get(session=session, round_id=round_id)
+        except Round.DoesNotExist:
+            # Create new round with just-in-time stimulus selection
+            sgid = self.get_next_stimulusgroup_id(session, round_id)
+            sg: StimulusGroup = StimulusGroup.objects.get(
+                stimulusgroup_id=sgid, experiment=session.experiment)
+            r = Round(session=session, round_id=round_id, stimulusgroup=sg)
+            r.save()
+            return r
+
+    def get_session_status(self, session: Session) -> SessionStatus:
+        rounds: List[Round] = list(session.round_set.all())
+        
+        # If no rounds exist yet, session is initialized (ready to start)
+        if not rounds:
+            return SessionStatus.INITIALIZED
 
         # iterate through all StimulusVoteGroups. If all assgined Votes, return
         # 'FINISHED'; if none, return 'INITIALIZED'; otherwise, return
@@ -416,19 +632,16 @@ class ExperimentController(object):
         """
         return a list of steps for the session, including both regular rounds
         and additions (instruction steps and pre-/post-test surveys).
+        stimulusgroup_id will be determined just-in-time.
         """
-        od = self._get_ordering_for_session(session.id)
-        assert 'stimulusgroups' in od
-        assert isinstance(od['stimulusgroups'], dict)
         steps = list()
-        for rid in sorted(od['stimulusgroups'].keys()):
-            sgid = od['stimulusgroups'][rid]
+        for rid in range(self.experiment_config.rounds_per_session):
             steps.append({
                 'position': {
                     'round_id': rid,
                 },
                 'context': {
-                    'stimulusgroup_id': sgid,
+                    'round_id': rid,  # We'll determine stimulusgroup_id just-in-time
                 }
             })
         additions = self.experiment_config.additions

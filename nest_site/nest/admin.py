@@ -4,7 +4,8 @@ from django.utils.encoding import force_str
 from django.utils.safestring import mark_safe
 
 from .models import Experiment, Experimenter, Round, \
-    Session, Stimulus, StimulusGroup, StimulusVoteGroup, Subject, Vote, VoteRegister
+    Session, Stimulus, StimulusGroup, StimulusVoteGroup, Subject, Vote, VoteRegister, \
+    Content, Condition, QuestPlus
 
 
 # =================
@@ -394,6 +395,85 @@ class ExperimenterAdmin(admin.ModelAdmin):
 # ==================
 
 
+class ContentAdmin(admin.ModelAdmin):
+    fieldsets = [
+        (None,               {'fields': ['__str__', 'id',
+                                         'name', 'content_id',
+                                         'experiment',
+                                         'questplus_info']}),
+        ('Date information', {'fields': ['create_date',
+                                         ]}),
+    ]
+    readonly_fields = ['__str__', 'id',
+                       'create_date',
+                       'questplus_info',
+                       ]
+    list_display = ('__str__', 'id',
+                    'name', 'content_id',
+                    'experiment',
+                    'has_questplus',
+                    )
+    list_filter = ['create_date', 'experiment']
+    search_fields = ['name']
+
+    def has_questplus(self, obj):
+        return hasattr(obj, 'questplus') and obj.questplus is not None
+    has_questplus.boolean = True
+    has_questplus.short_description = 'Has QuestPlus'
+
+    def questplus_info(self, obj):
+        try:
+            qp = obj.questplus
+            url = reverse('admin:%s_%s_change' % (qp._meta.app_label,
+                                                  qp._meta.model_name),
+                          args=[force_str(qp.pk)])
+            return mark_safe(f'<a href="{url}">QuestPlus {qp.id}</a>')
+        except:
+            return "No QuestPlus instance"
+    questplus_info.short_description = 'QuestPlus'
+
+
+# class ConditionAdmin(admin.ModelAdmin):
+#     fieldsets = [
+#         (None,               {'fields': ['__str__', 'id',
+#                                          'name', 'condition_id',
+#                                          'experiment']}),
+#         ('Date information', {'fields': ['create_date',
+#                                          ]}),
+#     ]
+#     readonly_fields = ['__str__', 'id',
+#                        'create_date',
+#                        ]
+#     list_display = ('__str__', 'id',
+#                     'name', 'condition_id',
+#                     'experiment',
+#                     )
+#     list_filter = ['create_date', 'experiment']
+#     search_fields = ['name']
+
+
+class QuestPlusAdmin(admin.ModelAdmin):
+    fieldsets = [
+        (None,               {'fields': ['__str__', 'id',
+                                         'content', 'experiment',
+                                         'is_active', 'total_trials']}),
+        ('Configuration',    {'fields': ['quest_config']}),
+        ('State & Files',    {'fields': ['quest_state', 'json_file_path']}),
+        ('Date information', {'fields': ['create_date',
+                                         ]}),
+    ]
+    readonly_fields = ['__str__', 'id',
+                       'create_date',
+                       'total_trials',
+                       ]
+    list_display = ('__str__', 'id',
+                    'content', 'experiment',
+                    'is_active', 'total_trials',
+                    )
+    list_filter = ['create_date', 'experiment', 'is_active']
+    search_fields = ['content__name']
+
+
 admin.site.register(Experiment, ExperimentAdmin)
 admin.site.register(Session, SessionAdmin)
 admin.site.register(Round, RoundAdmin)
@@ -403,3 +483,6 @@ admin.site.register(StimulusGroup, StimulusGroupAdmin)
 admin.site.register(StimulusVoteGroup, StimulusVoteGroupAdmin)
 admin.site.register(Subject, SubjectAdmin)
 admin.site.register(Experimenter, ExperimenterAdmin)
+admin.site.register(Content, ContentAdmin)
+# admin.site.register(Condition, ConditionAdmin)
+admin.site.register(QuestPlus, QuestPlusAdmin)

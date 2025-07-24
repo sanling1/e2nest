@@ -349,6 +349,22 @@ class ExperimentConfig(object):
         return self.config['methodology']
 
     @property
+    def playlist_logic(self):
+        """
+        playlist_logic determines how stimuli are selected and presented.
+        Options include 'questplus' for adaptive testing.
+        """
+        return self.config.get('playlist_logic', 'default')
+
+    @property
+    def questplus_config(self):
+        """
+        questplus_config contains the configuration parameters for QuestPlus instances.
+        Expected format: dict with content_id keys mapping to QuestPlus configurations.
+        """
+        return self.config.get('questplus_config', {})
+
+    @property
     def prioritized(self):
         """
         prioritized is a list of dictionaries in the format of

@@ -1209,9 +1209,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                          ec.experiment_config.vote_scale == '0_TO_100') or \
                         (ec.experiment_config.methodology == 'samviq5d' and
                          ec.experiment_config.vote_scale == 'FIVE_POINT'):
-                    sg: StimulusGroup = StimulusGroup.objects.get(
-                        experiment=exp,
-                        stimulusgroup_id=step['context']['stimulusgroup_id'])
+                    sg: StimulusGroup = rnd.stimulusgroup
                     score_dict = step['context']['score']
                     assert isinstance(score_dict, dict)
                     for svgid, score in score_dict.items():
@@ -1244,6 +1242,10 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                                                     round=rnd,
                                                     stimulusvotegroup=svg)
                         vote.save()
+                        
+                        # Update QuestPlus with response if using questplus methodology
+                        if ec.experiment_config.playlist_logic == 'questplus':
+                            self._update_questplus_with_response(vote, score)
                 else:
                     assert False, 'The combination of {m} methodology with {s} vote_scale is undefined'.format(
                         m=ec.experiment_config.methodology, s=ec.experiment_config.vote_scale)
@@ -1294,7 +1296,10 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                 else:
                     associated_step = steps_planned[len(steps_performed) - 1]  # associated step is the previous one
                 assert not self._step_is_addition(associated_step)
-                stimulusgroup_id = associated_step['context']['stimulusgroup_id']
+                # Get stimulusgroup_id from the associated round just-in-time
+                associated_round_id = associated_step['position']['round_id']
+                associated_round = ec.get_or_create_round(session, associated_round_id)
+                stimulusgroup_id = associated_round.stimulusgroup.stimulusgroup_id
                 stimulusgroup = ec.experiment_config.stimulus_config.stimulusgroups[stimulusgroup_id]
                 assert 'super_stimulusgroup_id' in stimulusgroup
                 context = next_step['super_stimulusgroup_context_list'][stimulusgroup['super_stimulusgroup_id']]
@@ -1344,8 +1349,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                         ec.experiment_config.rounds_per_session - len(training_round_ids))
 
                 round_start_sec: float = time()
-                rnd: Round = Round.objects.get(
-                    session=session, round_id=next_step['position']['round_id'])
+                rnd: Round = ec.get_or_create_round(session, next_step['position']['round_id'])
                 round_start_sec_in_cookie = self._get_round_response_sec_from_cookie(request, rnd.id)
                 if round_start_sec_in_cookie is not None:
                     logger.warning(f'round_start_sec {round_start_sec_in_cookie} for round {rnd.id} '
@@ -1363,7 +1367,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
 
                     PageClass = map_methodology_to_page_class(
                         ec.experiment_config.methodology)
-                    sgid: int = next_step['context']['stimulusgroup_id']
+                    sgid: int = rnd.stimulusgroup.stimulusgroup_id
                     video_display_percentage = ec.experiment_config. \
                         stimulus_config.get_video_display_percentage(sgid)
                     pre_message: str = ec.experiment_config. \
@@ -1376,7 +1380,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                         stimulus_config.get_overlay_on_video_js(sgid)
                     assert video_display_percentage is not None
 
-                    svgid = self._get_matched_single_stimulusvotegroup_id(ec, next_step)
+                    svgid = self._get_matched_single_stimulusvotegroup_id(ec, rnd)
 
                     d = {'title': title,
                          'session_id': session_id,
@@ -1477,7 +1481,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
 
                     VoteClass = Vote.find_subclass(ec.experiment_config.vote_scale)
 
-                    svgid = self._get_matched_single_stimulusvotegroup_id(ec, next_step)
+                    svgid = self._get_matched_single_stimulusvotegroup_id(ec, rnd)
                     sid_1st, sid_2nd = self._get_matched_double_stimulus_ids(ec, svgid)
                     s_1st = self._get_matched_stimulus_dict(ec, sid_1st)
                     s_2nd = self._get_matched_stimulus_dict(ec, sid_2nd)
@@ -1494,7 +1498,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                         video_a = s_2nd['path']
                         video_a_to_b_values = list(reversed(VoteClass.support))
 
-                    sgid: int = next_step['context']['stimulusgroup_id']
+                    sgid: int = rnd.stimulusgroup.stimulusgroup_id
                     video_display_percentage = ec.experiment_config. \
                         stimulus_config.get_video_display_percentage(sgid)
                     assert video_display_percentage is not None
@@ -1526,7 +1530,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                       ec.experiment_config.vote_scale == 'FIVE_POINT') or \
                         (ec.experiment_config.methodology == 'samviq' and
                          ec.experiment_config.vote_scale == '0_TO_100'):
-                    svgids = self._get_matched_stimulusvotegroup_ids(ec, next_step)
+                    svgids = self._get_matched_stimulusvotegroup_ids(ec, rnd)
 
                     # randomize the order of stimuli on the SAMVIQ page
                     random.shuffle(svgids)
@@ -1548,7 +1552,7 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                         assert dis_s['type'] == 'video/mp4'
                     PageClass = map_methodology_to_page_class(
                         ec.experiment_config.methodology)
-                    sgid: int = next_step['context']['stimulusgroup_id']
+                    sgid: int = rnd.stimulusgroup.stimulusgroup_id
                     video_display_percentage = ec.experiment_config. \
                         stimulus_config.get_video_display_percentage(sgid)
                     assert video_display_percentage is not None
@@ -1593,10 +1597,8 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
                     else:
                         raise e
 
-                sgid = next_step['context']['stimulusgroup_id']
-                sg: StimulusGroup = StimulusGroup.objects.get(
-                    experiment=exp,
-                    stimulusgroup_id=sgid)
+                sg: StimulusGroup = rnd.stimulusgroup
+                sgid = sg.stimulusgroup_id
                 skip_set_cookie: bool = False
 
                 if (ec.experiment_config.methodology == 'acr' and
@@ -1707,15 +1709,16 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
         return sid, sid2
 
     @staticmethod
-    def _get_matched_single_stimulusvotegroup_id(ec, step):
+    def _get_matched_single_stimulusvotegroup_id(ec, rnd):
+        sgid = rnd.stimulusgroup.stimulusgroup_id
         sg: dict
         for sg in ec.experiment_config.stimulus_config.stimulusgroups:
-            if sg['stimulusgroup_id'] == step['context']['stimulusgroup_id']:
+            if sg['stimulusgroup_id'] == sgid:
                 break
         else:
             assert False, 'no stimulusgroup with matching ' \
                           'stimulusgroup_id {} found: {}'. \
-                format(step['context']['stimulusgroup_id'],
+                format(sgid,
                        ec.experiment_config.stimulus_config.stimulusgroups)
         assert len(sg['stimulusvotegroup_ids']) == 1, \
             "expect only one stimulusvotegroup per" \
@@ -1724,19 +1727,20 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
         return svgid
 
     @classmethod
-    def _get_matched_stimulusvotegroup_ids(cls, ec, step):
-        return cls._get_matched_stimulusgroup(ec, step)['stimulusvotegroup_ids']
+    def _get_matched_stimulusvotegroup_ids(cls, ec, rnd):
+        return cls._get_matched_stimulusgroup(ec, rnd)['stimulusvotegroup_ids']
 
     @staticmethod
-    def _get_matched_stimulusgroup(ec, step):
+    def _get_matched_stimulusgroup(ec, rnd):
+        sgid = rnd.stimulusgroup.stimulusgroup_id
         sg: dict
         for sg in ec.experiment_config.stimulus_config.stimulusgroups:
-            if sg['stimulusgroup_id'] == step['context']['stimulusgroup_id']:
+            if sg['stimulusgroup_id'] == sgid:
                 break
         else:
             assert False, 'no stimulusgroup with matching ' \
                           'stimulusgroup_id {} found: {}'. \
-                format(step['context']['stimulusgroup_id'],
+                format(sgid,
                        ec.experiment_config.stimulus_config.stimulusgroups)
         return sg
 
@@ -1749,6 +1753,81 @@ class NestSite(ExperimentMixin, NestSitePrivateMixin):
         or "round step" (step where some stimuli got voted).
         """
         return 'before_or_after' in step['position']
+    
+    def _update_questplus_with_response(self, vote, score):
+        """
+        Update QuestPlus instances with user response when using questplus methodology.
+        
+        Args:
+            vote: Vote object containing the user response
+            score: The score/response value
+        """
+        try:
+            stimulus_a = vote.stimulusvotegroup.stimuli.first()
+            stimulus_b = vote.stimulusvotegroup.stimuli.last()
+
+            content_a = stimulus_a.content
+            content_b = stimulus_b.content
+            assert content_a == content_b
+
+            if content_a:
+                # Get QuestPlus instance for this content
+                questplus_instance = content_a.get_questplus()
+
+                if questplus_instance:
+                    # Convert score to QuestPlus response format
+                    # For 2AFC: score typically represents which stimulus was chosen
+                    response = self._convert_score_to_questplus_response(score, stimulus_a, stimulus_b)
+
+                    # Get stimulus level - this might need to be stored differently
+                    # For now, use a placeholder approach
+                    stimulus_level = self._get_stimulus_level_for_questplus(stimulus_a, stimulus_b)
+
+                    # Update QuestPlus with the response
+                    questplus_instance.update_with_response(stimulus_level, response)
+                        
+        except Exception as e:
+            # Log error but don't break the experiment flow
+            print(f"Warning: Failed to update QuestPlus with response: {e}")
+
+    def _convert_score_to_questplus_response(self, score, stimulus_a, stimulus_b):
+        """
+        Convert experiment score to QuestPlus response format.
+        
+        Args:
+            score: The original score from the vote
+            stimulus: Stimulus object for context
+
+        Returns:
+            str: Response in QuestPlus format ('correct'/'incorrect' for 2AFC)
+        """
+
+        if stimulus_a.distortion_level == 0 and score == 1:
+            return 'correct'
+        if stimulus_b.distortion_level == 0 and score == 0:
+            return 'correct'
+        
+        return 'incorrect'
+
+    
+    def _get_stimulus_level_for_questplus(self, stimulus_a, stimulus_b):
+        """
+        Get the stimulus level/intensity for QuestPlus update.
+        
+        Args:
+            stimulus: Stimulus object
+            vote: Vote object for context
+            
+        Returns:
+            int: Stimulus level for QuestPlus
+        """
+        stimulus_level_a = stimulus_a.distortion_level
+        stimulus_level_b = stimulus_b.distortion_level
+
+        assert min([stimulus_level_a, stimulus_level_b]) == 0, \
+            "Expect at least one stimulus to have distortion level 0 for QuestPlus update"
+        
+        return max(stimulus_level_a, stimulus_level_b)
 
 
 class DefaultNestSite(LazyObject):
